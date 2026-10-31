@@ -1,8 +1,8 @@
 # Initial plan generation
 
-This document covers one path: an `AthleteProfile` goes in, Python checks it, a model fills the calendar, and the result is written as markdown. It starts at `build_training_plan` in [`src/whoneedsacoach/planner/training.py`](../src/whoneedsacoach/planner/training.py).
+This document covers one path: Garmin history is reduced to an `AthleteProfile`, Python checks that profile, a model fills the calendar, and the result is written as markdown. Plan generation starts at `build_training_plan` in [`src/whoneedsacoach/planner/training.py`](../src/whoneedsacoach/planner/training.py). The profile is assembled before that call.
 
-The CLI, the chat agent, Garmin fetches, and Monday revision are separate and are not described here. [`src/whoneedsacoach/planner/build.py`](../src/whoneedsacoach/planner/build.py) is a separate deterministic builder. `build_training_plan` does not call it.
+The chat loop and Monday revision are separate and are not described here. [`src/whoneedsacoach/planner/build.py`](../src/whoneedsacoach/planner/build.py) also contains a deterministic plan builder. `build_training_plan` does not call it. The same file does supply the week totals used to turn Garmin runs into `weekly_km`.
 
 ## What you get
 
@@ -29,7 +29,47 @@ This path does not open SQLite. The database is described at the end for when so
 | `run_days` | Weekdays the athlete will run |
 | `long_run_day` | One of `run_days` |
 
-Python owns the calendar. The model writes a workout only for the dates it is given. A day it omits is a rest day.
+Python owns the calendar. The model writes a workout only for the dates it is given. A day it omits is a rest day. The model never sees the Garmin run list. `athlete_profile` keeps weekly kilometres and an optional best, and drops the individual runs.
+
+## Garmin
+
+Reads go through `Garmin` in [`src/whoneedsacoach/tools/garmin.py`](../src/whoneedsacoach/tools/garmin.py). `garmin_session` starts the Garmin MCP server (`uv run garmin-mcp` in `GARMIN_REPO`) and limits it to `get_activities_by_date` and `get_personal_record`. A token directory, when passed, is set as `GARMINTOKENS`. Each tool call is appended to the coach log.
+
+`runs_between` pages `get_activities_by_date` for `activity_type` `running`, 100 activities at a time, and keeps activities whose type is `running` or missing. Each kept run is `id`, `date` (the first 10 characters of `start_time`), and `distance_km` (`distance_meters / 1000`, rounded to three decimals).
+
+`personal_record` calls `get_personal_record` with no arguments. A response that is not a JSON array becomes no record. Otherwise it looks up the race distance:
+
+| Race distance | Garmin `record_type` |
+| --- | --- |
+| `5k` | Fastest 5K |
+| `10k` | Fastest 10K |
+| `half_marathon` | Fastest Half Marathon |
+| `marathon` | Fastest Marathon |
+
+A match with `raw_value` set returns `time_seconds` and `date`. Anything else returns no record.
+
+The window is the last four complete Monday–Sunday weeks. `four_complete_weeks` takes the Monday of the current week and steps back four weeks, so the week that contains today is left out. Both callers pass that Monday through the Sunday of the newest of those four weeks.
+
+`complete_week_totals` sums `distance_km` in each of those weeks and records the longest run in the week. A week with no runs is 0.
+
+Two callers turn that into an `AthleteProfile`.
+
+`generate` in [`src/whoneedsacoach/agent/executor.py`](../src/whoneedsacoach/agent/executor.py) opens a session with no token directory and fetches runs only. `median_weekly_km` is the median of the four weekly totals, rounded to one decimal. If every week is 0, the median is 0. That number replaces `weekly_km` on the fixed `PROFILE` in [`planner/training.py`](../src/whoneedsacoach/planner/training.py). Race, run days, long-run day, and personal best stay on `PROFILE`: a half marathon on 29 January 2027, Wednesday / Friday / Sunday with the long run on Sunday, and a 10k best of `49:04` on 1 June 2026. `generate` does not call `personal_record`.
+
+`finish` in [`src/whoneedsacoach/agent/flow.py`](../src/whoneedsacoach/agent/flow.py) fetches runs and `personal_record` for the race already stored on the plan. `snapshot_from_runs` builds:
+
+| Snapshot field | Source |
+| --- | --- |
+| `weeks` | The four weekly totals |
+| `baseline_weekly_km` | Median of those totals when any week is above 0, otherwise absent |
+| `baseline_long_run_km` | Longest single run across those weeks when any week is above 0, otherwise absent |
+| `pr` | `time_seconds`, `date`, and `pace_sec_per_km` (`time_seconds` divided by the race distance in kilometres) when Garmin returned a record |
+| `need_baseline` | True when every week is 0 |
+| `need_pr` | True when `pr` is absent |
+
+If Garmin has no runs and a previous snapshot already has `baseline_weekly_km`, that saved baseline is kept and `need_baseline` is cleared. A saved `pr` is kept the same way when Garmin has no record. A declined best stays declined. `finish` stops before building a profile while a baseline is still missing, or while a best is missing and has not been declined.
+
+`athlete_profile` then copies race distance and date from the saved race (mapping `half_marathon` to `half`), `weekly_km` from `baseline_weekly_km`, and run days from the saved schedule. `baseline_long_run_km` is not a profile field. When `pr` is present, the best distance is the race distance, the time is `pr["time_seconds"]` formatted as `MM:SS` or `H:MM:SS`, and `pb_date` is set when the record has a date. A best with a time and no date leaves `pb_date` empty, which `validate_profile` rejects because a best needs all three fields.
 
 `validate_profile` rejects a profile before any model call when:
 
@@ -161,4 +201,4 @@ There is one plan row per user. `race_json`, `schedule_json`, `snapshot_json`, `
 
 ## Tests
 
-[`tests/test_training.py`](../tests/test_training.py) covers profile mapping, grouping workouts into weeks, and markdown rendering. It does not call the model. [`tests/test_planner.py`](../tests/test_planner.py) and [`tests/test_repo.py`](../tests/test_repo.py) cover the deterministic builder and the database, which are outside this document.
+[`tests/test_training.py`](../tests/test_training.py) covers `athlete_profile`, grouping workouts into weeks, and markdown rendering. It does not call Garmin or the model. [`tests/test_planner.py`](../tests/test_planner.py) covers `median_weekly_km` and `snapshot_from_runs`, including a week of zeros and the open week being left out of the median. [`tests/test_repo.py`](../tests/test_repo.py) covers the database, which this path does not write.
