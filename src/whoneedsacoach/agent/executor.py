@@ -1,44 +1,28 @@
 import asyncio
 from datetime import date, timedelta
 
-from agents import Runner
-
-from whoneedsacoach.agent.agent import make_agent
-from whoneedsacoach.agent.state import CoachContext
+from whoneedsacoach.models.llm import model
 from whoneedsacoach.planner.build import monday_of
 from whoneedsacoach.planner.revise import propose_next_week
+from whoneedsacoach.planner.training import PROFILE, build_training_plan, write_plan
 from whoneedsacoach.store.repo import Repo
 from whoneedsacoach.tools.garmin import garmin_session
 from whoneedsacoach.utils.config import DB_PATH, LOG_PATH
-from whoneedsacoach.utils.log import show, write_log
+from whoneedsacoach.utils.log import note, show
 
 
-async def chat(user_name: str) -> None:
-    repo = Repo(DB_PATH)
-    user = repo.get_or_create_user(user_name)
-    if repo.get_plan(user["id"]) is None:
-        repo.create_plan(user["id"])
-    ctx = CoachContext(repo=repo, user_id=user["id"])
-    print(f"Garmin responses and plan data are appended to {LOG_PATH}", flush=True)
-    async with garmin_session(user["garmin_token_dir"]) as garmin:
-        ctx.garmin = garmin
-        items: list = []
-        pending_input = "Begin."
-        while True:
-            plan = repo.get_plan(user["id"])
-            agent = make_agent(plan, date.today())
-            items.append({"role": "user", "content": pending_input})
-            result = await Runner.run(agent, items, context=ctx)
-            reply = result.final_output or ""
-            write_log("coach reply", reply)
-            print(f"\ncoach: {reply}\n", flush=True)
-            items = result.to_input_list()
-            try:
-                pending_input = input("you: ")
-            except EOFError:
-                break
-            if pending_input.strip().lower() in {"exit", "quit"}:
-                break
+async def generate() -> None:
+    print(f"Plan progress is appended to {LOG_PATH}", flush=True)
+    note(f"using model {model.model}")
+    note(f"building training plan for {PROFILE.race_distance} on {PROFILE.race_date.isoformat()}")
+    result = await build_training_plan(PROFILE)
+    written = write_plan(PROFILE, result, date.today())
+    show("plan written", str(written))
+    print(result.plan.short_summary, flush=True)
+
+
+def run_plan() -> None:
+    asyncio.run(generate())
 
 
 async def checkin() -> None:
@@ -51,10 +35,14 @@ async def checkin() -> None:
         return
     for user, plan in pairs:
         weeks = (plan["plan"] or {}).get("weeks", [])
+        if weeks and "target_distance_km" not in weeks[0]:
+            print(f"{user['name']}: weekly revision waits until Garmin actuals are wired")
+            continue
         index = next((i for i, week in enumerate(weeks) if week["week_start"] == reviewed_key), None)
         if index is None or index + 1 >= len(weeks):
             print(f"{user['name']}: no week to revise")
             continue
+        note(f"{user['name']}: fetching Garmin runs for the week of {reviewed_key}")
         async with garmin_session(user["garmin_token_dir"]) as garmin:
             runs = await garmin.runs_between(reviewed, reviewed + timedelta(days=6))
         show(f"garmin data for {user['name']} week {reviewed_key}", runs)
@@ -66,10 +54,6 @@ async def checkin() -> None:
         repo.save_plan(plan)
         label = "changed" if pending["changed"] else "unchanged"
         print(f"{user['name']}: {pending['week']['week_start']} {label}")
-
-
-def run_chat(user_name: str) -> None:
-    asyncio.run(chat(user_name))
 
 
 def run_checkin() -> None:

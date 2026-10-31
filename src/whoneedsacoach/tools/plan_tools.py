@@ -3,6 +3,7 @@ from agents import RunContextWrapper, function_tool
 from whoneedsacoach.agent.flow import (
     accept,
     accept_pending,
+    decline_pr as mark_no_pr,
     reject_pending,
     save_baseline,
     save_pr,
@@ -38,6 +39,12 @@ async def set_pr(ctx: RunContextWrapper[CoachContext], time: str, date: str) -> 
 
 
 @function_tool
+async def decline_pr(ctx: RunContextWrapper[CoachContext]) -> str:
+    """Continue without a personal best when the user has none."""
+    return await mark_no_pr(ctx.context)
+
+
+@function_tool
 async def accept_plan(ctx: RunContextWrapper[CoachContext]) -> str:
     """Mark the proposed plan as the user's plan."""
     return accept(ctx.context)
@@ -66,6 +73,7 @@ ALL_TOOLS = {
     "set_schedule": set_schedule,
     "set_baseline": set_baseline,
     "set_pr": set_pr,
+    "decline_pr": decline_pr,
     "accept_plan": accept_plan,
     "show_week": show_week,
     "accept_revision": accept_revision,

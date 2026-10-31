@@ -5,15 +5,20 @@ from whoneedsacoach.agent.state import CoachContext
 from whoneedsacoach.planner.build import (
     DISTANCES,
     RACE_KM,
-    build_plan,
     four_complete_weeks,
     normalize_day,
     parse_pace_time,
-    plan_start,
     snapshot_from_runs,
 )
 from whoneedsacoach.planner.revise import apply_revision
-from whoneedsacoach.utils.log import show
+from whoneedsacoach.planner.training import (
+    athlete_profile,
+    build_training_plan,
+    check_profile,
+    plan_document,
+    write_plan,
+)
+from whoneedsacoach.utils.log import note, show
 
 
 def _plan(ctx: CoachContext) -> dict:
@@ -65,6 +70,17 @@ async def save_baseline(ctx: CoachContext, weekly_km: float, long_run_km: float)
     return await finish(ctx, refetch_snapshot=False)
 
 
+async def decline_pr(ctx: CoachContext) -> str:
+    plan = _plan(ctx)
+    snapshot = plan["snapshot"] or {}
+    snapshot["pr"] = None
+    snapshot["need_pr"] = False
+    snapshot["pr_declined"] = True
+    plan["snapshot"] = snapshot
+    ctx.repo.save_plan(plan)
+    return await finish(ctx, refetch_snapshot=False)
+
+
 async def save_pr(ctx: CoachContext, time: str, pr_date: str) -> str:
     plan = _plan(ctx)
     if not plan["race"]:
@@ -81,6 +97,7 @@ async def save_pr(ctx: CoachContext, time: str, pr_date: str) -> str:
         "pace_sec_per_km": int(seconds / RACE_KM[plan["race"]["distance"]]),
     }
     snapshot["need_pr"] = False
+    snapshot["pr_declined"] = False
     plan["snapshot"] = snapshot
     ctx.repo.save_plan(plan)
     return await finish(ctx, refetch_snapshot=False)
@@ -93,6 +110,10 @@ async def finish(ctx: CoachContext, refetch_snapshot: bool) -> str:
     if refetch_snapshot or plan["snapshot"] is None:
         today = date.today()
         weeks = four_complete_weeks(today)
+        note(
+            "fetching Garmin runs and personal record "
+            f"from {weeks[0].isoformat()} to {(weeks[-1] + timedelta(days=6)).isoformat()}"
+        )
         runs = await ctx.garmin.runs_between(weeks[0], weeks[-1] + timedelta(days=6))
         record = await ctx.garmin.personal_record(plan["race"]["distance"])
         show(
@@ -112,34 +133,49 @@ async def finish(ctx: CoachContext, refetch_snapshot: bool) -> str:
         if kept.get("pr") is not None and snapshot["need_pr"]:
             snapshot["pr"] = kept["pr"]
             snapshot["need_pr"] = False
+        if kept.get("pr_declined") and kept.get("pr") is None:
+            snapshot["pr"] = None
+            snapshot["need_pr"] = False
+            snapshot["pr_declined"] = True
         plan["snapshot"] = snapshot
         show("snapshot passed to the model", snapshot)
     snapshot = plan["snapshot"]
-    if snapshot.get("need_baseline") or snapshot.get("need_pr") or snapshot.get("pr") is None:
+    waiting_for_baseline = snapshot.get("need_baseline") or snapshot.get("baseline_weekly_km") is None
+    waiting_for_pr = snapshot.get("need_pr") and snapshot.get("pr") is None and not snapshot.get("pr_declined")
+    if waiting_for_baseline or waiting_for_pr:
+        missing = []
+        if waiting_for_baseline:
+            missing.append("weekly kilometres")
+        if waiting_for_pr:
+            missing.append("a personal best or a decline")
+        note("plan waiting on " + " and ".join(missing))
         plan["status"] = "intake"
         plan["plan"] = None
         ctx.repo.save_plan(plan)
         return json.dumps({"status": "intake", "snapshot": snapshot})
-    if snapshot.get("baseline_weekly_km") is None:
-        plan["status"] = "intake"
-        plan["plan"] = None
-        ctx.repo.save_plan(plan)
-        return json.dumps({"status": "intake", "snapshot": snapshot})
-    start = plan_start(date.today())
-    plan["plan"] = build_plan(
-        baseline_weekly_km=snapshot["baseline_weekly_km"],
-        baseline_long_run_km=snapshot["baseline_long_run_km"],
-        distance=plan["race"]["distance"],
-        start=start,
-        race_date=date.fromisoformat(plan["race"]["date"]),
-        run_days=plan["schedule"]["run_days"],
-        long_run_day=plan["schedule"]["long_run_day"],
-        pr_time_seconds=snapshot["pr"]["time_seconds"],
-    )
+    today = date.today()
+    try:
+        profile = athlete_profile(plan["race"], plan["schedule"], snapshot)
+    except (KeyError, ValueError) as exc:
+        return _error(str(exc))
+    failed = check_profile(profile, today)
+    if failed:
+        note(f"plan stopped: {failed['error']}")
+        return json.dumps(failed)
+    note(f"building training plan for {profile.race_distance} on {profile.race_date.isoformat()}")
+    result = await build_training_plan(profile, today)
+    plan["plan"] = plan_document(result, today)
+    written = write_plan(profile, result, today)
     plan["status"] = "review"
     plan["pending"] = None
     ctx.repo.save_plan(plan)
-    payload = {"status": "review", "snapshot": snapshot, "plan": plan["plan"]}
+    payload = {
+        "status": "review",
+        "snapshot": snapshot,
+        "plan": plan["plan"],
+        "markdown_path": str(written),
+    }
+    show("plan written", str(written))
     show("plan passed to the model", payload)
     return json.dumps(payload)
 

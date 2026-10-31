@@ -1,7 +1,11 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ROOT = Path(__file__).resolve().parents[3]
+load_dotenv(ROOT / ".env", override=True)
+
 GARMIN_REPO = Path(os.environ.get("GARMIN_REPO", "/Users/anay-trip/Documents/AI/projects/garmin_mcp"))
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:latest")

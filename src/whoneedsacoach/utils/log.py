@@ -14,3 +14,9 @@ def show(title: str, payload) -> None:
     body = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
     print(f"\n=== {title} ===\n{body}", flush=True)
     write_log(title, payload)
+
+
+def note(message: str) -> None:
+    """One progress line on the terminal and in the log, flushed before the next wait."""
+    print(message, flush=True)
+    write_log("progress", message)
