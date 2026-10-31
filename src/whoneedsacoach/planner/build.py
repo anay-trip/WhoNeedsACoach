@@ -309,7 +309,8 @@ def four_complete_weeks(today: date) -> list[date]:
     return [this_monday - timedelta(days=7 * (4 - offset)) for offset in range(4)]
 
 
-def snapshot_from_runs(runs: list[dict], today: date, pr: dict | None, distance: str) -> dict:
+def complete_week_totals(runs: list[dict], today: date) -> list[dict]:
+    """Distance for each of the last four Monday–Sunday weeks. The current week is left out."""
     weeks = []
     for monday in four_complete_weeks(today):
         sunday = monday + timedelta(days=6)
@@ -325,6 +326,19 @@ def snapshot_from_runs(runs: list[dict], today: date, pr: dict | None, distance:
                 "long_run_km": round_km(max(in_week, default=0)),
             }
         )
+    return weeks
+
+
+def median_weekly_km(runs: list[dict], today: date) -> float:
+    """Typical recent volume. A week of zeros is 0. No running at all is 0."""
+    distances = [week["distance_km"] for week in complete_week_totals(runs, today)]
+    if not any(distance_km > 0 for distance_km in distances):
+        return 0.0
+    return round_km(median(distances))
+
+
+def snapshot_from_runs(runs: list[dict], today: date, pr: dict | None, distance: str) -> dict:
+    weeks = complete_week_totals(runs, today)
     distances = [week["distance_km"] for week in weeks]
     has_runs = any(distance_km > 0 for distance_km in distances)
     pr_block = None

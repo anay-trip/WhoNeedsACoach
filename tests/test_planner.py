@@ -1,6 +1,6 @@
 from datetime import date
 
-from whoneedsacoach.planner.build import build_plan, progression, snapshot_from_runs
+from whoneedsacoach.planner.build import build_plan, median_weekly_km, progression, snapshot_from_runs
 from whoneedsacoach.planner.revise import apply_revision, propose_next_week
 
 
@@ -69,6 +69,21 @@ def test_snapshot_uses_four_complete_weeks_and_median():
     assert snapshot["baseline_long_run_km"] == 20.0
     assert snapshot["need_baseline"] is False
     assert snapshot["pr"]["pace_sec_per_km"] == 300
+
+
+def test_median_weekly_km_drops_a_spike_and_ignores_the_open_week():
+    runs = [
+        {"date": "2026-09-15", "distance_km": 5},
+        {"date": "2026-09-22", "distance_km": 20},
+        {"date": "2026-09-29", "distance_km": 5},
+        {"date": "2026-10-06", "distance_km": 5},
+        {"date": "2026-10-14", "distance_km": 99},
+    ]
+    assert median_weekly_km(runs, date(2026, 10, 14)) == 5.0
+
+
+def test_median_weekly_km_is_zero_without_runs():
+    assert median_weekly_km([], date(2026, 10, 14)) == 0.0
 
 
 def test_monday_hold_uses_the_lower_target_and_actual_long_run():

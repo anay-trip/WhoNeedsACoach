@@ -30,11 +30,11 @@ COACH_DISTANCE = {
 
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
-# Fixed until the chat collects these. Weekly kilometres and the 10k best match the training sample.
+# Race, days, and best stay fixed. weekly_km is replaced with the Garmin median before the coach runs.
 PROFILE = AthleteProfile(
     race_distance="half",
     race_date=date(2027, 1, 29),
-    weekly_km=20,
+    weekly_km=0,
     pb_distance="10k",
     pb_time="49:04",
     pb_date=date(2026, 6, 1),
@@ -121,30 +121,48 @@ def plan_document(result: TrainingResult, today: date) -> dict:
     }
 
 
-def plan_markdown(slots: list[DaySlot], plan: TrainingPlan, warnings: list[str]) -> str:
+def plan_markdown(
+    slots: list[DaySlot],
+    plan: TrainingPlan,
+    warnings: list[str],
+    weekly_km: float | None = None,
+) -> str:
     """One compact line per training day. A week of only rest days is left out."""
     by_date = {workout.date: workout for workout in plan.workouts}
-    lines: list[str] = []
-    if warnings:
-        lines.extend(["## Warnings", ""])
-        lines.extend(f"- {warning}" for warning in warnings)
-        lines.append("")
-    lines.extend([plan.short_summary.strip(), ""])
+    blocks: list[tuple[str, list[str], float]] = []
     week_rows: list[str] = []
+    week_km = 0.0
     week_header = ""
     for slot in slots:
         monday = slot.date - timedelta(days=slot.date.weekday())
         header = f"## Week of {monday.strftime('%d %b %Y')}"
         if header != week_header:
             if week_rows:
-                lines.extend([week_header, "", *week_rows, ""])
+                blocks.append((week_header, week_rows, week_km))
             week_header = header
             week_rows = []
-        row = _row(slot, by_date.get(slot.date))
+            week_km = 0.0
+        workout = by_date.get(slot.date)
+        row = _row(slot, workout)
         if row:
             week_rows.append(row)
+            if workout is not None and workout.kind != "rest":
+                week_km += workout.distance_km
     if week_rows:
-        lines.extend([week_header, "", *week_rows, ""])
+        blocks.append((week_header, week_rows, week_km))
+
+    lines: list[str] = []
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        lines.extend(f"- {warning}" for warning in warnings)
+        lines.append("")
+    summary = plan.short_summary.strip()
+    if weekly_km is not None:
+        peak = max((km for _, _, km in blocks), default=0.0)
+        summary = f"{summary}\n\nStarting from {_km(weekly_km)} km per week, peaking at {_km(peak)} km."
+    lines.extend([summary, ""])
+    for header, rows, km in blocks:
+        lines.extend([f"{header} ({_km(km)} km)", "", *rows, ""])
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -159,7 +177,10 @@ def write_plan(
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{profile.race_distance}-{profile.race_date.isoformat()}.md"
     slots = build_slots(profile, today)
-    path.write_text(plan_markdown(slots, result.plan, result.warnings), encoding="utf-8")
+    path.write_text(
+        plan_markdown(slots, result.plan, result.warnings, profile.weekly_km),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -200,8 +221,8 @@ async def build_training_plan(profile: AthleteProfile, today: date | None = None
     slots = build_slots(profile, today)
     warnings = standing_warnings(profile)
 
-    to_fill = sum(1 for slot in slots if slot.role != "rest")
-    note(f"training coach: {to_fill} days to fill, asking for the draft")
+    weeks_to_fill = len({slot.date - timedelta(days=slot.date.weekday()) for slot in slots})
+    note(f"training coach: {weeks_to_fill} weeks to fill, asking for the draft")
     with trace("training plan"):
         draft = await _ask(profile, slots, today)
         note(f"training coach: draft returned, {len(draft.workouts)} workouts, checking it")

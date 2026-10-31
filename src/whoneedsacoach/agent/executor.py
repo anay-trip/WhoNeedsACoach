@@ -2,7 +2,7 @@ import asyncio
 from datetime import date, timedelta
 
 from whoneedsacoach.models.llm import model
-from whoneedsacoach.planner.build import monday_of
+from whoneedsacoach.planner.build import complete_week_totals, four_complete_weeks, median_weekly_km, monday_of
 from whoneedsacoach.planner.revise import propose_next_week
 from whoneedsacoach.planner.training import PROFILE, build_training_plan, write_plan
 from whoneedsacoach.store.repo import Repo
@@ -13,10 +13,20 @@ from whoneedsacoach.utils.log import note, show
 
 async def generate() -> None:
     print(f"Plan progress is appended to {LOG_PATH}", flush=True)
+    today = date.today()
     note(f"using model {model.model}")
-    note(f"building training plan for {PROFILE.race_distance} on {PROFILE.race_date.isoformat()}")
-    result = await build_training_plan(PROFILE)
-    written = write_plan(PROFILE, result, date.today())
+    weeks = four_complete_weeks(today)
+    note(f"fetching Garmin runs from {weeks[0].isoformat()} to {(weeks[-1] + timedelta(days=6)).isoformat()}")
+    async with garmin_session(None) as garmin:
+        runs = await garmin.runs_between(weeks[0], weeks[-1] + timedelta(days=6))
+    totals = complete_week_totals(runs, today)
+    weekly_km = median_weekly_km(runs, today)
+    profile = PROFILE.model_copy(update={"weekly_km": weekly_km})
+    volumes = ", ".join(f"{week['distance_km']:g}" for week in totals)
+    note(f"last 4 weeks: {volumes} km; median {weekly_km:g} km")
+    note(f"building training plan for {profile.race_distance} on {profile.race_date.isoformat()} at {weekly_km:g} km/week")
+    result = await build_training_plan(profile)
+    written = write_plan(profile, result, today)
     show("plan written", str(written))
     print(result.plan.short_summary, flush=True)
 

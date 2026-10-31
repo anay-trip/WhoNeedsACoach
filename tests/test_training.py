@@ -103,7 +103,7 @@ def test_plan_markdown_skips_rest_and_prints_structure():
     ]
     text = plan_markdown(slots, result.plan, result.warnings)
     assert text.startswith("## Warnings\n\n- Long run is a bit short.\n\nEasy miles, then a half.\n")
-    assert "## Week of 05 Oct 2026" in text
+    assert "## Week of 05 Oct 2026 (14 km)" in text
     assert "2026-10-05 mon" not in text
     assert "- 2026-10-06 tue: easy, 6 km, 6:30–7:00/km" in text
     assert "- 2026-10-08 thu: tempo, 8 km, 2 km warmup, 3 km tempo, 1 km cooldown" in text
@@ -125,8 +125,9 @@ def test_write_plan_uses_the_race_name(tmp_path):
         warnings=[],
     )
     path = write_plan(profile, result, date(2026, 10, 6), directory=tmp_path)
+    text = path.read_text(encoding="utf-8")
     assert path.name == "half-2026-12-25.md"
-    assert path.read_text(encoding="utf-8").startswith("Finish the half.")
+    assert text.startswith("Finish the half.\n\nStarting from 20 km per week, peaking at 5 km.")
 
 
 def test_near_race_is_an_error_payload():
