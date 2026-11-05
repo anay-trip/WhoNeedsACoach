@@ -90,7 +90,7 @@ Runner mode, from `runner_mode`:
 
 A new runner gets walk/run and easy running only, with those words as both paces, and never tempo or intervals. With no personal best, paces stay the cues `walk/run` or `easy`. The model is not asked to invent a min/km pace. A best older than about six months (183 days) still allows tempo and intervals, at the slower fences. A half or marathon from 0 km/week aims to finish, including by run/walk, and does not support a time goal. That case is a standing warning: it is recorded, and it does not by itself ask for a revision.
 
-Other rules the prompt and the checks share: easy running is the default; at most one tempo or intervals day in a week; those weeks alternate, starting with tempo; quality work stays out of a short opening week, the first four full weeks, and the taper. Long-run caps, how large a share of the week the long run may be, and taper length differ by distance. The prompt states the same numbers the checks enforce. The checks still run after the model returns.
+Other rules the prompt and the checks share: easy running is the default; at most one tempo or intervals day in a week; those weeks alternate, starting with tempo; quality work stays out of a short opening week, the first four full weeks, deload weeks, and the taper. The first full build week is never a deload. Counting the full build weeks after it, every third one is a deload: the 4th, 7th, and 10th. A deload is 20% less volume than the previous full week, easy and long only. The week after a deload may return to the volume and long run of the week before the deload. Skip a deload when fewer than three full build weeks remain before the taper. Long-run caps, how large a share of the week the long run may be, and taper length differ by distance. The prompt states the same numbers the checks enforce. The checks still run after the model returns.
 
 ## File flow
 
@@ -161,30 +161,72 @@ A missing workout on a day that should have been filled renders as `missing` in 
 
 ## Checks
 
-`check_plan` walks the slots, then adds week-level checks. Failures are strings. They are sent back once. They are not raised.
+`check_plan` in [`planner/guardrails.py`](../src/whoneedsacoach/planner/guardrails.py) walks the slots, then adds week-level checks. Failures are strings. They are sent back once. They are not raised. The prompt repeats the same numbers.
+
+Before a plan is asked for, `validate_profile` rejects a race fewer than 56 days away, weekly distance outside 0–120 km, repeated run days, fewer than 2 or more than 6 run days, a weekday outside `mon`–`sun`, a long run that is not a run day, and a personal best that is incomplete, in the future, not `MM:SS` or `H:MM:SS`, or outside the plausible range for that distance. `standing_warnings` records a half or marathon from 0 km/week as a finish-only plan. That warning does not ask for a revision.
 
 Per day, via `_check_day`:
 
 - A workout on a rest day is rejected. A missing rest day is the plan.
 - A run, long, or race slot needs exactly one workout, and no workout may fall outside the calendar.
 - Kind must match the role: a run day is `easy`, `tempo`, or `intervals`; a long day is `long`; race day is `race`. Distance must be present and non-negative.
-- A new runner cannot have tempo or intervals. Quality work is rejected in the early weeks and the taper. Intervals require a personal best.
+- A new runner cannot have tempo or intervals. `_quality_week` rejects tempo and intervals in a short opening week, the first four full weeks, a deload week, and the taper. Intervals also require a personal best.
 - Tempo and intervals need a structure line that names the warmup and the cooldown. Every other kind must leave `structure` empty.
 - With no personal best, both paces must be `walk/run` or `easy`. With a best, paces are min/km and `pace_low` is the faster end. Easy and long must be slower than the half-marathon fence. Tempo and intervals may sit on their fence and may not go faster. Race pace is not fenced.
 
 Across the plan:
 
 - `_check_quality_count`: at most one tempo or intervals day in a Monday–Sunday week.
-- `_check_quality_alternation`: quality weeks go tempo, then intervals, then tempo. Skipped for a new runner and when there is no personal-best date.
-- `_check_volume` builds weeks and then checks the build (`_check_build`), long-run growth and share (`_check_long_runs`, `_check_target_long_runs`), and the taper (`_check_taper`).
-
-The numbers live in [`planner/guardrails.py`](../src/whoneedsacoach/planner/guardrails.py). The prompt repeats them so the model sees the same fences the checker uses.
+- `_check_quality_alternation`: quality days go tempo, then intervals, then tempo. Skipped for a new runner and when there is no personal-best date. A deload has no quality day, so it drops out of the sequence.
+- `_check_build`: the first full week is 80–110% of current weekly distance for an amateur, and at most 2 km per run day and at most 8 km for a new or returning runner. Later build weeks may rise by at most 1 km, or 5% for an amateur. A half or marathon caps the kilometres outside the long run, not the weekly total. A deload week is skipped. The week after a deload may return to the volume of the full build week before the deload, and may not go past it. Creep resumes from that restored week.
+- `_check_deload`: the 4th, 7th, and 10th full build weeks, when at least three full build weeks still remain before the taper, are at most 80% of the previous full week and contain easy and long runs only.
+- `_check_long_runs`: a long run is at most 12, 16, 22, or 35 km for a 5k, 10k, half, or marathon. On a full week it is at most 40% of the week for a 5k or 10k, and at most half the week for a half or marathon. After the first full week, a half or marathon long run that has reached its target also sits under the tighter share this calendar can hold. A deload that keeps a long long run fails this share check, so the long run comes down with the week.
+- `_check_target_long_runs`: the first long run starts within 1 km of its ceiling. Later long runs grow by at most 1 km, or up to 3 km when the race is soon. A shorter long run is allowed. The long run after a deload is measured from the long run before that deload, so it can return to that distance. An amateur half or marathon still has two pre-taper long runs at 15 km or 32 km.
+- `_check_taper`: the taper is the last 1, 1, 2, or 3 weeks for a 5k, 10k, half, or marathon. Aside from the race, those weeks stay at or under 85% of the biggest earlier full week. The days before the race are lighter than every full week that is not a deload. A deload may be lighter than race week.
 
 ## Database
 
-`write_plan` and `build_training_plan` do not create or update a database. If `data/coach.db` is missing, nothing in this path has connected.
+`build_training_plan` does not open the database. `generate` saves the plan for Anay and schedules the current week. Accepting a plan, Monday check-in, and Garmin login do too. SQLite stays the database: one file, users as rows, and [`Repo`](../src/whoneedsacoach/store/repo.py) as the only reader and writer. The default path is `data/coach.db`. `COACH_DB` overrides it ([`utils/config.py`](../src/whoneedsacoach/utils/config.py)). Connecting creates the file, turns on WAL, and creates tables that are missing.
 
-Other code can open SQLite through [`store/db.py`](../src/whoneedsacoach/store/db.py). The default path is `data/coach.db`. `COACH_DB` overrides it ([`utils/config.py`](../src/whoneedsacoach/utils/config.py)). Connecting creates the file and the tables if they are absent.
+A later UI on one app server can keep this file. Postgres is the swap when more than one app server must share it, and that swap stays behind `Repo`.
+
+Garmin tokens and passwords are not columns. `users.garmin_token_dir` is the directory where that user's OAuth tokens were written (`data/tokens/<user id>`).
+
+```mermaid
+erDiagram
+    users ||--o| plans : has
+    users ||--o{ activities : logs
+    plans ||--o{ activities : records
+    users {
+        int id PK
+        text name UK
+        text garmin_token_dir
+    }
+    plans {
+        int id PK
+        int user_id UK
+        text status
+        text race_json
+        text schedule_json
+        text snapshot_json
+        text plan_json
+        text pending_json
+    }
+    activities {
+        int id PK
+        int user_id FK
+        int plan_id FK
+        text session_date
+        int garmin_activity_id
+        real distance_km
+        real duration_seconds
+        int workout_id
+    }
+```
+
+There is one plan row per user. `race_json`, `schedule_json`, `snapshot_json`, `plan_json`, and `pending_json` are JSON text. `plan_json` is the target. Each week has `week_start`, `target_distance_km`, `long_run_km`, and `sessions`. A session keeps `date`, `type`, `distance_km`, `pace_low`, `pace_high`, and `structure`. After it is placed on the Garmin calendar it also has `workout_id` and `scheduled_workout_id`. Those two ids are inside the JSON, not their own table. Recording an actual run does not change the session distance or pace.
+
+`activities` is one row per completed scheduled workout. `garmin_activity_id` is unique per user. `session_date` is the planned day that workout was on. `workout_id` is the library workout Garmin linked to the activity.
 
 ```bash
 sqlite3 data/coach.db
@@ -192,13 +234,33 @@ sqlite3 data/coach.db
 .schema
 .mode line
 SELECT id, name, garmin_token_dir FROM users;
-SELECT id, user_id, status, race_json, schedule_json, snapshot_json, plan_json, pending_json FROM plans;
+SELECT id, user_id, status FROM plans;
+SELECT user_id, session_date, garmin_activity_id, distance_km, workout_id FROM activities;
 ```
 
-`.quit` leaves the shell. On SQLite 3.38 or newer, one JSON column can be printed with `SELECT json_pretty(plan_json) FROM plans;`.
+`.quit` leaves the shell. On SQLite 3.38 or newer, `SELECT json_pretty(plan_json) FROM plans;` prints the target plan.
 
-There is one plan row per user. `race_json`, `schedule_json`, `snapshot_json`, `plan_json`, and `pending_json` are JSON text, not separate tables.
+## Garmin login
+
+Login is two calls on [`LoginService`](../src/whoneedsacoach/auth/login.py): `begin(name, email, password)`, then `submit_mfa(attempt_id, code)` when Garmin asks for a code. The MFA attempt stays in memory for a few minutes because Garmin's client has to resume the same login. A later UI posts those two calls and shows a code field when `begin` returns `mfa_required`. It does not grow a second login.
+
+Until that UI exists, the only account is Anay. `coach login` passes the name `Anay` and the email and password from `GARMIN_EMAIL` and `GARMIN_PASSWORD` in `.env`. Those values are not written to SQLite. On success the tokens go under `data/tokens/<user id>` and that path is saved on the user row. Re-login updates the same path.
+
+## One week on the Garmin calendar
+
+The saved plan still holds every week. Only the week the athlete is about to run is uploaded. That is the Monday–Sunday week that contains today, and only sessions dated today or later. If that week has nothing left, the next Monday week is scheduled instead.
+
+`coach` accept, through [`schedule_current_week`](../src/whoneedsacoach/planner/schedule.py), builds one running workout per due session and calls `schedule_workouts`. Easy, long, and race days are one distance step. Tempo and intervals use the structure line when it names a warmup, the work, and a cooldown; otherwise they are one distance step whose description is the structure line. A numeric pace becomes a Garmin pace range in meters per second. `walk/run` and `easy` send no pace target.
+
+`schedule_workouts` returns `workout_id`. `get_scheduled_workouts` for that week then supplies `scheduled_workout_id`. Both are saved on the session. Scheduling the same workout and date again does not add a second calendar entry.
+
+Monday check-in reads completions for workouts already scheduled. It does not schedule the new week. Garmin sets `associatedActivityId` when the athlete does the scheduled workout and it syncs. Check-in stores that activity. A run Garmin did not attach to the workout is ignored. The reviewed week's actual distance is the sum of those rows. The long-run actual is the row on that week's long session.
+
+Accepting the Monday proposal replaces the upcoming week, unschedules that week only when it already had calendar ids and its sessions changed, and schedules the week that contains today. Rejecting the proposal leaves the saved sessions and schedules that week if it is not on the calendar yet.
 
 ## Tests
 
-[`tests/test_training.py`](../tests/test_training.py) covers `athlete_profile`, grouping workouts into weeks, and markdown rendering. It does not call Garmin or the model. [`tests/test_planner.py`](../tests/test_planner.py) covers `median_weekly_km` and `snapshot_from_runs`, including a week of zeros and the open week being left out of the median. [`tests/test_repo.py`](../tests/test_repo.py) covers the database, which this path does not write.
+[`tests/test_training.py`](../tests/test_training.py) covers `athlete_profile`, grouping workouts into weeks, and markdown rendering. It does not call Garmin or the model. [`tests/test_planner.py`](../tests/test_planner.py) covers `median_weekly_km` and `snapshot_from_runs`. [`tests/test_repo.py`](../tests/test_repo.py) covers users, plans, and activities. [`tests/test_schedule.py`](../tests/test_schedule.py) covers workout JSON, which sessions are due, and completion sync with a fake Garmin. [`tests/test_login.py`](../tests/test_login.py) covers the MFA step and the saved token path. None of these call Garmin Connect.
+
+## What would move it up in terms of agency:
+Level 4: an always-on coach that notices missed runs, reschedules, and messages without coach checkin / chat approval for every consequential change.

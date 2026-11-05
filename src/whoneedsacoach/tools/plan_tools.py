@@ -1,8 +1,8 @@
 from agents import RunContextWrapper, function_tool
 
 from whoneedsacoach.agent.flow import (
-    accept,
     accept_pending,
+    accept_plan,
     decline_pr as mark_no_pr,
     reject_pending,
     save_baseline,
@@ -47,7 +47,7 @@ async def decline_pr(ctx: RunContextWrapper[CoachContext]) -> str:
 @function_tool
 async def accept_plan(ctx: RunContextWrapper[CoachContext]) -> str:
     """Mark the proposed plan as the user's plan."""
-    return accept(ctx.context)
+    return await accept_plan(ctx.context)
 
 
 @function_tool
@@ -59,13 +59,13 @@ async def show_week(ctx: RunContextWrapper[CoachContext], week_start: str) -> st
 @function_tool
 async def accept_revision(ctx: RunContextWrapper[CoachContext]) -> str:
     """Apply the Monday proposal to the upcoming week."""
-    return accept_pending(ctx.context)
+    return await accept_pending(ctx.context)
 
 
 @function_tool
 async def reject_revision(ctx: RunContextWrapper[CoachContext]) -> str:
     """Drop the Monday proposal and keep the saved plan."""
-    return reject_pending(ctx.context)
+    return await reject_pending(ctx.context)
 
 
 ALL_TOOLS = {

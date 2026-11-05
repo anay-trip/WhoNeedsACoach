@@ -8,6 +8,7 @@ from agents import Runner, trace
 
 from whoneedsacoach.agent.training_coach import training_coach
 from whoneedsacoach.models.training import AthleteProfile, DaySlot, TrainingPlan, Workout
+from whoneedsacoach.planner.build import round_km
 from whoneedsacoach.planner.guardrails import (
     build_slots,
     check_plan,
@@ -112,7 +113,15 @@ def plan_document(result: TrainingResult, today: date) -> dict:
                     "structure": workout.structure,
                 }
             )
-        weeks.append({"week_start": monday.isoformat(), "sessions": sessions})
+        long_runs = [session["distance_km"] for session in sessions if session["type"] == "long"]
+        weeks.append(
+            {
+                "week_start": monday.isoformat(),
+                "target_distance_km": round_km(sum(session["distance_km"] for session in sessions)),
+                "long_run_km": long_runs[0] if long_runs else 0,
+                "sessions": sessions,
+            }
+        )
     return {
         "plan_start": today.isoformat(),
         "short_summary": result.plan.short_summary,

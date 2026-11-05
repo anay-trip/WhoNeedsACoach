@@ -8,7 +8,7 @@ from whoneedsacoach.utils.config import OLLAMA_BASE_URL, OLLAMA_MODEL
 set_tracing_disabled(True)
 
 XAI_BASE_URL = "https://api.x.ai/v1"
-DEFAULT_GROK_MODEL = "grok-4.7"
+DEFAULT_GROK_MODEL = "grok-4.6"
 
 
 def create_model() -> OpenAIChatCompletionsModel:

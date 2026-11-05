@@ -1,4 +1,6 @@
 import json
+from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import date, timedelta
 
 from whoneedsacoach.agent.state import CoachContext
@@ -11,6 +13,8 @@ from whoneedsacoach.planner.build import (
     snapshot_from_runs,
 )
 from whoneedsacoach.planner.revise import apply_revision
+from whoneedsacoach.planner.schedule import reschedule_changed_week, schedule_current_week
+from whoneedsacoach.tools.garmin import garmin_session
 from whoneedsacoach.planner.training import (
     athlete_profile,
     build_training_plan,
@@ -180,8 +184,17 @@ async def finish(ctx: CoachContext, refetch_snapshot: bool) -> str:
     return json.dumps(payload)
 
 
-def accept(ctx: CoachContext) -> str:
+async def accept_plan(ctx: CoachContext, today: date | None = None) -> str:
+    today = today or date.today()
     plan = _plan(ctx)
+    if not plan.get("plan"):
+        return _error("there is no plan to accept")
+    try:
+        async with open_garmin(ctx) as garmin:
+            await schedule_current_week(garmin, plan["plan"], today)
+    except Exception as exc:
+        ctx.repo.save_plan(plan)
+        return _error(str(exc))
     plan["status"] = "active"
     ctx.repo.save_plan(plan)
     return json.dumps({"status": "active", "plan_start": plan["plan"]["plan_start"]})
@@ -195,18 +208,48 @@ def week_view(ctx: CoachContext, week_start: str) -> str:
     return _error(f"no week starting {week_start}")
 
 
-def accept_pending(ctx: CoachContext) -> str:
+async def accept_pending(ctx: CoachContext, today: date | None = None) -> str:
+    today = today or date.today()
     plan = _plan(ctx)
+    if not plan.get("pending"):
+        return _error("there is no revision to accept")
+    week_start = plan["pending"]["week"]["week_start"]
+    old_week = deepcopy(next(week for week in plan["plan"]["weeks"] if week["week_start"] == week_start))
     plan["plan"] = apply_revision(plan["plan"], plan["pending"])
+    try:
+        async with open_garmin(ctx) as garmin:
+            await reschedule_changed_week(garmin, plan["plan"], old_week, today)
+    except Exception as exc:
+        ctx.repo.save_plan(plan)
+        return _error(str(exc))
     plan["pending"] = None
     plan["status"] = "active"
     ctx.repo.save_plan(plan)
     return json.dumps({"status": "active"})
 
 
-def reject_pending(ctx: CoachContext) -> str:
+async def reject_pending(ctx: CoachContext, today: date | None = None) -> str:
+    today = today or date.today()
     plan = _plan(ctx)
+    try:
+        async with open_garmin(ctx) as garmin:
+            await schedule_current_week(garmin, plan["plan"], today)
+    except Exception as exc:
+        ctx.repo.save_plan(plan)
+        return _error(str(exc))
     plan["pending"] = None
     plan["status"] = "active"
     ctx.repo.save_plan(plan)
     return json.dumps({"status": "active", "pending": None})
+
+
+@asynccontextmanager
+async def open_garmin(ctx: CoachContext):
+    user = ctx.repo.get_user(ctx.user_id)
+    if user is None or not user.get("garmin_token_dir"):
+        raise RuntimeError("log in to Garmin before scheduling")
+    if ctx.garmin is not None:
+        yield ctx.garmin
+        return
+    async with garmin_session(user["garmin_token_dir"]) as garmin:
+        yield garmin

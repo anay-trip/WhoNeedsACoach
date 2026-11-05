@@ -55,13 +55,14 @@ class Garmin:
             for activity in payload.get("activities", []):
                 if activity.get("type") not in (None, "running"):
                     continue
-                runs.append(
-                    {
-                        "id": activity.get("id"),
-                        "date": activity["start_time"][:10],
-                        "distance_km": round(activity.get("distance_meters", 0) / 1000, 3),
-                    }
-                )
+                run = {
+                    "id": activity.get("id"),
+                    "date": activity["start_time"][:10],
+                    "distance_km": round(activity.get("distance_meters", 0) / 1000, 3),
+                }
+                if activity.get("duration_seconds") is not None:
+                    run["duration_seconds"] = activity["duration_seconds"]
+                runs.append(run)
             if not payload.get("has_more"):
                 break
             page = payload.get("next_page", page + 1)
@@ -81,11 +82,41 @@ class Garmin:
                 }
         return None
 
+    async def schedule_workouts(self, schedules: list[dict]) -> dict:
+        text = await self._call("schedule_workouts", {"schedules": schedules})
+        payload = _json_object(text)
+        if payload is None:
+            raise RuntimeError(text)
+        return payload
+
+    async def scheduled_workouts(self, start: date, end: date) -> list[dict]:
+        text = await self._call(
+            "get_scheduled_workouts",
+            {"start_date": start.isoformat(), "end_date": end.isoformat()},
+        )
+        payload = _json_object(text)
+        if payload is None:
+            return []
+        return payload.get("scheduled_workouts", [])
+
+    async def unschedule_workout(self, scheduled_workout_id: int) -> None:
+        await self._call("unschedule_workout", {"scheduled_workout_id": scheduled_workout_id})
+
+
+def _json_object(text: str) -> dict | None:
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return None
+    return json.loads(stripped)
+
 
 @asynccontextmanager
 async def garmin_session(token_dir: str | None):
     env = os.environ.copy()
-    env["GARMIN_ENABLED_TOOLS"] = "get_activities_by_date,get_personal_record"
+    env["GARMIN_ENABLED_TOOLS"] = (
+        "get_activities_by_date,get_personal_record,"
+        "schedule_workouts,get_scheduled_workouts,unschedule_workout"
+    )
     if token_dir:
         env["GARMINTOKENS"] = token_dir
     server = MCPServerStdio(

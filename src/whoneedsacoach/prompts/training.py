@@ -23,6 +23,9 @@ COACH_INSTRUCTIONS = (
     "Write a workout only for the dates you are given. A day you omit is a rest day. "
     "A run day is easy, tempo, or intervals. A long day is long. Race day is race. "
     "Prefer easy running. Raise distance as slowly as the calendar allows. "
+    "The first full build week is never a deload. After that, every third full build week "
+    "is a deload (the 4th, 7th, and 10th): 20% less volume than the previous full week, "
+    "easy and long only. The week after a deload may return to the week before it. "
     "When the race is soon, increase the long run sooner so it still reaches its target. "
     "A new runner uses walk/run and easy running only, with those words as both paces, "
     "and never tempo or intervals. "
@@ -98,7 +101,18 @@ def _training_rules(profile: AthleteProfile, mode: str, today: date) -> str:
         "Do not emit rest days.",
         "Do not name a phase and do not write a note.",
         "At most one tempo or intervals day in a week.",
-        "No tempo or intervals in a short opening week, the first four full weeks, or the taper.",
+        "No tempo or intervals in a short opening week, the first four full weeks, the taper, "
+        "or a deload week.",
+        (
+            "The first full build week is never a deload. Counting the full build weeks after it, "
+            "every third one is a deload: the 4th, 7th, and 10th full build weeks. "
+            "A deload is 20% less volume than the previous full week, and easy and long only "
+            "(no tempo or intervals). "
+            "The week after a deload may return to the volume and long run of the full build week "
+            "before that deload. "
+            "Skip a deload when fewer than three full build weeks remain before the taper. "
+            "The taper is already light and is not a deload."
+        ),
         f"The taper is the last {taper_label}. Aside from the race, those weeks stay at or under "
         "85% of the biggest earlier full week, and the days before the race are the lightest week.",
         _long_run_share_sentence(profile, cap),
@@ -119,17 +133,21 @@ def _training_rules(profile: AthleteProfile, mode: str, today: date) -> str:
     if profile.weekly_km > 0 and profile.race_distance in LONG_RUN_TARGET_KM:
         sentences.append(_long_run_rule(profile, today))
         sentences.append(
-            "After the first full week, distance outside the long run rises by at most 1 km "
+            "After the first full week, except on a deload and the week that returns from one, "
+            "distance outside the long run rises by at most 1 km "
             "or 5% of the previous week's non-long distance, whichever is larger. "
             "It may rise by the long run's own increase only when that keeps the long run "
             "at or under half the week."
         )
     elif mode == "amateur":
         sentences.append(
-            "Each later build week adds at most 1 km or 5% of the previous full week, whichever is larger."
+            "Each later build week, except a deload and the week that returns from one, "
+            "adds at most 1 km or 5% of the previous full week, whichever is larger."
         )
     else:
-        sentences.append("Each later build week adds at most 1 km.")
+        sentences.append(
+            "Each later build week, except a deload and the week that returns from one, adds at most 1 km."
+        )
     if mode != "new" and profile.pb_date is not None:
         sentences.append(
             "On the quality weeks, alternate tempo and intervals, starting with tempo. "

@@ -32,6 +32,18 @@ class Repo:
             user_id = cursor.lastrowid
         else:
             user_id = row["id"]
+            if garmin_token_dir is not None and row["garmin_token_dir"] != garmin_token_dir:
+                self.conn.execute(
+                    "UPDATE users SET garmin_token_dir = ? WHERE id = ?",
+                    (garmin_token_dir, user_id),
+                )
+                self.conn.commit()
+        return self._user(user_id)
+
+    def get_user(self, user_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None:
+            return None
         return self._user(user_id)
 
     def _user(self, user_id: int) -> dict:
@@ -86,6 +98,55 @@ class Repo:
         for row in rows:
             pairs.append((self._user(row["user_id"]), self.get_plan(row["user_id"])))
         return pairs
+
+    def upsert_activity(self, activity: dict) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO activities (
+                user_id, plan_id, session_date, garmin_activity_id,
+                distance_km, duration_seconds, workout_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, garmin_activity_id) DO UPDATE SET
+                plan_id = excluded.plan_id,
+                session_date = excluded.session_date,
+                distance_km = excluded.distance_km,
+                duration_seconds = excluded.duration_seconds,
+                workout_id = excluded.workout_id
+            """,
+            (
+                activity["user_id"],
+                activity["plan_id"],
+                activity["session_date"],
+                activity["garmin_activity_id"],
+                activity["distance_km"],
+                activity.get("duration_seconds"),
+                activity.get("workout_id"),
+            ),
+        )
+        self.conn.commit()
+
+    def activities_between(self, user_id: int, start, end) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM activities
+            WHERE user_id = ? AND session_date >= ? AND session_date <= ?
+            ORDER BY session_date, id
+            """,
+            (user_id, start.isoformat(), end.isoformat()),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "user_id": row["user_id"],
+                "plan_id": row["plan_id"],
+                "session_date": row["session_date"],
+                "garmin_activity_id": row["garmin_activity_id"],
+                "distance_km": row["distance_km"],
+                "duration_seconds": row["duration_seconds"],
+                "workout_id": row["workout_id"],
+            }
+            for row in rows
+        ]
 
     def _plan(self, row: sqlite3.Row) -> dict:
         return {

@@ -76,6 +76,10 @@ def test_plan_document_groups_weeks_and_keeps_pace_text():
     assert first[1]["type"] == "tempo"
     assert first[1]["structure"].startswith("8 km")
     assert document["weeks"][1]["sessions"][0]["type"] == "long"
+    assert document["weeks"][0]["target_distance_km"] == 14
+    assert document["weeks"][0]["long_run_km"] == 0
+    assert document["weeks"][1]["target_distance_km"] == 12
+    assert document["weeks"][1]["long_run_km"] == 12
 
 
 def test_plan_markdown_skips_rest_and_prints_structure():

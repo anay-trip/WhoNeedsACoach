@@ -287,7 +287,9 @@ def _check_quality_day(
         return [f"{day} is {workout.kind}. A new runner has no tempo or intervals."]
     monday = _monday(workout.date)
     if not _quality_week(monday, profile, today):
-        return [f"{day} is {workout.kind}. Keep speed work out of the early weeks and the taper."]
+        return [
+            f"{day} is {workout.kind}. Keep speed work out of the early weeks, deload weeks, and the taper."
+        ]
     if workout.kind == "intervals" and profile.pb_date is None:
         return [f"{day} is intervals. Intervals need a personal best so the pace is not invented."]
     return []
@@ -401,6 +403,7 @@ def _check_volume(
     build = [week for week in full if not week["taper"]]
     if build:
         errors.extend(_check_build(build, profile, mode))
+        errors.extend(_check_deload(build))
     errors.extend(_check_long_runs(weeks, profile, today))
     errors.extend(_check_target_long_runs(weeks, profile, today))
     errors.extend(_check_taper(weeks, full, profile.race_date))
@@ -413,7 +416,8 @@ def _check_build(build: list[dict], profile: AthleteProfile, mode: str) -> list[
     An amateur half or marathon caps the easy and quality kilometres, not the
     weekly total, so the long run can reach its target. The other days still
     rise at the slow rate unless a faster rise is what keeps the long run at
-    or under half the week.
+    or under half the week. Deload weeks (every third full build week after the
+    first) are allowed to drop and are not checked for upward creep.
     """
     errors = []
     first = build[0]
@@ -433,27 +437,103 @@ def _check_build(build: list[dict], profile: AthleteProfile, mode: str) -> list[
                 f"Week of {label} is {_km(first['volume'])} km. "
                 f"The first full week from no running should be at most {cap} km."
             )
-    for previous, week in zip(build, build[1:]):
-        if profile.weekly_km > 0 and profile.race_distance in LONG_RUN_TARGET_KM:
-            before = _non_long_km(previous)
-            after = _non_long_km(week)
-            allowance = _non_long_allowance(previous, week)
-            if after > before + allowance + KM_TOLERANCE:
-                errors.append(
-                    f"Week of {week['monday'].isoformat()} has {_km(after)} km outside the long run, "
-                    f"more than {_km(allowance)} km above the previous full week "
-                    f"({_km(before)} km)."
-                )
+    for index, week in enumerate(build[1:], start=1):
+        if _is_deload_index(index, len(build)):
             continue
-        if mode == "amateur":
-            allowance = max(1.0, previous["volume"] * 0.05)
+        baseline, returning = _creep_baseline(build, index)
+        if profile.weekly_km > 0 and profile.race_distance in LONG_RUN_TARGET_KM:
+            before = _non_long_km(baseline)
+            after = _non_long_km(week)
+            allowance = 0.0 if returning else _non_long_allowance(baseline, week)
+            if after > before + allowance + KM_TOLERANCE:
+                errors.append(_creep_error(week, baseline, after, before, allowance, returning, outside=True))
+            continue
+        if returning:
+            allowance = 0.0
+        elif mode == "amateur":
+            allowance = max(1.0, baseline["volume"] * 0.05)
         else:
             allowance = 1.0
-        if week["volume"] > previous["volume"] + allowance + KM_TOLERANCE:
+        if week["volume"] > baseline["volume"] + allowance + KM_TOLERANCE:
             errors.append(
-                f"Week of {week['monday'].isoformat()} is {_km(week['volume'])} km, "
-                f"more than {_km(allowance)} km above the previous full week "
-                f"({_km(previous['volume'])} km)."
+                _creep_error(week, baseline, week["volume"], baseline["volume"], allowance, returning, outside=False)
+            )
+    return errors
+
+
+def _creep_baseline(build: list[dict], index: int) -> tuple[dict, bool]:
+    """The week a build week is measured against. The week after a deload uses the week before it."""
+    if index >= 2 and _is_deload_index(index - 1, len(build)):
+        return build[index - 2], True
+    return build[index - 1], False
+
+
+def _creep_error(
+    week: dict,
+    baseline: dict,
+    actual: float,
+    before: float,
+    allowance: float,
+    returning: bool,
+    outside: bool,
+) -> str:
+    label = week["monday"].isoformat()
+    prior = baseline["monday"].isoformat()
+    if returning:
+        if outside:
+            return (
+                f"Week of {label} has {_km(actual)} km outside the long run. "
+                f"The week after a deload may return to the week of {prior} "
+                f"({_km(before)} km outside the long run), not past it."
+            )
+        return (
+            f"Week of {label} is {_km(actual)} km. "
+            f"The week after a deload may return to the week of {prior} "
+            f"({_km(before)} km), not past it."
+        )
+    if outside:
+        return (
+            f"Week of {label} has {_km(actual)} km outside the long run, "
+            f"more than {_km(allowance)} km above the previous full week "
+            f"({_km(before)} km)."
+        )
+    return (
+        f"Week of {label} is {_km(actual)} km, "
+        f"more than {_km(allowance)} km above the previous full week "
+        f"({_km(before)} km)."
+    )
+
+
+def _is_deload_index(index: int, build_count: int) -> bool:
+    """True for every third full build week after the first, when three remain before taper."""
+    # index is 1 for the second full build week (build[1]).
+    return index >= 1 and index % 3 == 0 and index + 1 <= build_count - 2
+
+
+def _check_deload(build: list[dict]) -> list[str]:
+    """Every third full build week after the first drops volume and skips quality work."""
+    errors = []
+    for index, week in enumerate(build):
+        if index == 0 or not _is_deload_index(index, len(build)):
+            continue
+        previous = build[index - 1]
+        label = week["monday"].isoformat()
+        cap = previous["volume"] * 0.8
+        if week["volume"] > cap + KM_TOLERANCE:
+            errors.append(
+                f"Week of {label} is {_km(week['volume'])} km. "
+                f"This deload week should be 20% less than the previous full week "
+                f"({_km(previous['volume'])} km), so at most {_km(cap)} km."
+            )
+        quality = [
+            workout
+            for workout in week["workouts"]
+            if workout.kind in ("tempo", "intervals")
+        ]
+        if quality:
+            kinds = ", ".join(sorted({workout.kind for workout in quality}))
+            errors.append(
+                f"Week of {label} has {kinds}. Keep deload weeks to easy and long only."
             )
     return errors
 
@@ -515,15 +595,23 @@ def _check_target_long_runs(weeks: list[dict], profile: AthleteProfile, today: d
         )
     pre_taper = [workout for week in weeks if not week["taper"] for workout in week["long_runs"]]
     step = long_run_step_cap(profile, today)
+    deload_mondays = _deload_mondays(weeks)
     previous = None
+    anchor = None
     # A shorter long run is a cutback and is allowed. Only a jump past the step cap fails.
+    # The long run after a deload is measured from the long run before that deload.
     for workout in ordered:
-        if previous is not None and workout.distance_km > previous.distance_km + step + KM_TOLERANCE:
+        reference = previous
+        if previous is not None and _monday(previous.date) in deload_mondays and anchor is not None:
+            reference = anchor
+        if reference is not None and workout.distance_km > reference.distance_km + step + KM_TOLERANCE:
             errors.append(
                 f"{workout.date.isoformat()} long run is {_km(workout.distance_km)} km, "
-                f"more than {_km(step)} km above the previous long run "
-                f"({_km(previous.distance_km)} km)."
+                f"more than {_km(step)} km above the long run on {reference.date.isoformat()} "
+                f"({_km(reference.distance_km)} km)."
             )
+        if _monday(workout.date) not in deload_mondays:
+            anchor = workout
         previous = workout
     target = LONG_RUN_TARGET_KM[profile.race_distance] if profile.weekly_km > 0 else None
     if target is not None:
@@ -557,12 +645,14 @@ def _check_taper(weeks: list[dict], full: list[dict], race_date: date) -> list[s
                     f"Week of {week['monday'].isoformat()} is a taper week at {_km(volume)} km "
                     f"aside from the race. Taper weeks should be at most {_km(peak * 0.85)} km."
                 )
-    # The last taper week is race week. Its days before the race must be the lightest week.
+    # The last taper week is race week. Its days before the race must be the lightest
+    # non-deload week. A deload is allowed to sit under race week.
     race_week = taper[-1] if taper else None
+    deload_mondays = _deload_mondays(weeks)
     if race_week is not None:
         race_volume = aside_from_race(race_week)
         for week in full:
-            if week["monday"] == race_week["monday"]:
+            if week["monday"] == race_week["monday"] or week["monday"] in deload_mondays:
                 continue
             if race_volume > week["volume"] + KM_TOLERANCE:
                 errors.append(
@@ -601,11 +691,25 @@ def _weeks(
     return weeks
 
 
+def _deload_mondays(weeks: list[dict]) -> set[date]:
+    """Full build Mondays that are deloads. Taper weeks are not deloads."""
+    build = [week for week in weeks if week["full"] and not week["taper"]]
+    return {
+        week["monday"]
+        for index, week in enumerate(build)
+        if _is_deload_index(index, len(build))
+    }
+
+
 def _quality_week(monday: date, profile: AthleteProfile, today: date) -> bool:
-    """True on a full week after four easy full weeks and outside the taper."""
+    """True on a full week after four easy full weeks, outside the taper and not a deload."""
     full_mondays = _full_mondays(today, profile.race_date)
     taper_start = _monday(profile.race_date) - timedelta(weeks=TAPER_WEEKS[profile.race_distance] - 1)
-    return monday in full_mondays[4:] and monday < taper_start
+    if monday not in full_mondays[4:] or monday >= taper_start:
+        return False
+    build = [day for day in full_mondays if day < taper_start]
+    index = build.index(monday)
+    return not _is_deload_index(index, len(build))
 
 
 def _full_mondays(today: date, race_date: date) -> list[date]:
