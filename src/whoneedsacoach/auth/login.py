@@ -1,4 +1,4 @@
-"""Garmin login in two calls. The CLI uses this now. A UI can call the same functions."""
+"""Garmin login in two calls. The CLI and the Garmin integration adapter both use this."""
 
 import os
 import time
@@ -13,7 +13,7 @@ class GarminConnectBackend:
 
     def start(self, email: str, password: str):
         if not email or not password:
-            raise ValueError("Set GARMIN_EMAIL and GARMIN_PASSWORD for Anay in .env")
+            raise ValueError("email and password are required")
         from garminconnect import (
             Garmin,
             GarminConnectAuthenticationError,
@@ -44,16 +44,22 @@ class LoginService:
         self.backend = backend or GarminConnectBackend()
         self.attempts = attempts if attempts is not None else {}
 
-    def begin(self, name: str, email: str, password: str) -> dict:
+    def begin(self, name: str, email: str, password: str, *, user_id: int | None = None) -> dict:
+        """CLI path uses name. API path can pass an existing user_id."""
         try:
             status, payload = self.backend.start(email, password)
         except (ValueError, RuntimeError) as exc:
             return {"error": str(exc)}
         if status == "mfa":
             attempt_id = uuid.uuid4().hex
-            self.attempts[attempt_id] = {"payload": payload, "name": name, "created": time.time()}
+            self.attempts[attempt_id] = {
+                "payload": payload,
+                "name": name,
+                "user_id": user_id,
+                "created": time.time(),
+            }
             return {"status": "mfa_required", "attempt_id": attempt_id}
-        return self._store(name, payload)
+        return self._store(name, payload, user_id=user_id)
 
     def submit_mfa(self, attempt_id: str, code: str) -> dict:
         attempt = self.attempts.get(attempt_id)
@@ -66,15 +72,27 @@ class LoginService:
         except Exception as exc:
             return {"error": str(exc).split(":")[0].strip() or "Garmin rejected the code"}
         self.attempts.pop(attempt_id, None)
-        return self._store(attempt["name"], garmin)
+        return self._store(attempt["name"], garmin, user_id=attempt.get("user_id"))
 
-    def _store(self, name: str, garmin) -> dict:
-        user = self.repo.get_or_create_user(name)
-        token_dir = self.tokens_root / str(user["id"])
+    def _store(self, name: str, garmin, *, user_id: int | None = None) -> dict:
+        if user_id is None:
+            user = self.repo.get_or_create_user(name)
+            user_id = user["id"]
+        else:
+            user = self.repo.get_user(user_id)
+            if user is None:
+                return {"error": "user not found"}
+        token_dir = self.tokens_root / str(user_id) / "garmin"
         token_dir.mkdir(parents=True, exist_ok=True)
         garmin.client.dump(str(token_dir))
         _secure(token_dir)
-        user = self.repo.get_or_create_user(name, str(token_dir))
+        self.repo.upsert_provider_connection(
+            user_id,
+            "garmin",
+            token_dir=str(token_dir),
+            status="connected",
+        )
+        user = self.repo.get_user(user_id)
         return {
             "status": "ready",
             "user_id": user["id"],

@@ -13,6 +13,15 @@ DB_PATH = Path(os.environ.get("COACH_DB", ROOT / "data" / "coach.db"))
 LOG_PATH = Path(os.environ.get("COACH_LOG", ROOT / "logs" / "coach.log"))
 TOKEN_ROOT = Path(os.environ.get("COACH_TOKENS", ROOT / "data" / "tokens"))
 
+AUTH_JWT_SECRET = os.environ.get("AUTH_JWT_SECRET", "dev-only-change-me-please-set-in-prod")
+AUTH_ACCESS_TTL_SECONDS = int(os.environ.get("AUTH_ACCESS_TTL_SECONDS", "900"))
+AUTH_COOKIE_SECURE = os.environ.get("AUTH_COOKIE_SECURE", "false").lower() in {"1", "true", "yes"}
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
+    if origin.strip()
+]
+
 # The only account until a UI collects credentials. The CLI passes these into
 # LoginService.begin. A later UI calls that same function with form values.
 ANAY_NAME = "Anay"

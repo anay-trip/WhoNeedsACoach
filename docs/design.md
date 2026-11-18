@@ -1,6 +1,8 @@
 # Initial plan generation
 
-This document covers one path: Garmin history is reduced to an `AthleteProfile`, Python checks that profile, a model fills the calendar, and the result is written as markdown. Plan generation starts at `build_training_plan` in [`src/whoneedsacoach/planner/training.py`](../src/whoneedsacoach/planner/training.py). The profile is assembled before that call.
+This document covers the coaching domain: Garmin history is reduced to an `AthleteProfile`, Python checks that profile, a model fills the calendar, and the result is written as markdown. Plan generation starts at `build_training_plan` in [`src/whoneedsacoach/planner/training.py`](../src/whoneedsacoach/planner/training.py). The profile is assembled before that call. CLI agent flow (`agent/flow.py`) and calendar push for the current week are also in scope here.
+
+Backend auth, HTTP APIs, ERD, and app config live in [`docs/software-design.md`](software-design.md). The HTTP contract is [`docs/api.md`](api.md).
 
 The chat loop and Monday revision are separate and are not described here. [`src/whoneedsacoach/planner/build.py`](../src/whoneedsacoach/planner/build.py) also contains a deterministic plan builder. `build_training_plan` does not call it. The same file does supply the week totals used to turn Garmin runs into `weekly_km`.
 
@@ -14,7 +16,7 @@ plans/{race_distance}-{race_date}.md
 
 For a half marathon on 29 January 2027 that is `plans/half-2027-01-29.md`. Rest-only weeks are left out. Each training day is one line. Tempo and interval days print their structure. Other days print distance and pace. The summary adds the starting weekly kilometres and the peak week.
 
-This path does not open SQLite. The database is described at the end for when some other path has created `data/coach.db`.
+This path does not open SQLite. CLI persistence of race/schedule/plan JSON is described near the end for when some other path has created `data/coach.db`.
 
 ## Input
 
@@ -184,67 +186,19 @@ Across the plan:
 - `_check_target_long_runs`: the first long run starts within 1 km of its ceiling. Later long runs grow by at most 1 km, or up to 3 km when the race is soon. A shorter long run is allowed. The long run after a deload is measured from the long run before that deload, so it can return to that distance. An amateur half or marathon still has two pre-taper long runs at 15 km or 32 km.
 - `_check_taper`: the taper is the last 1, 1, 2, or 3 weeks for a 5k, 10k, half, or marathon. Aside from the race, those weeks stay at or under 85% of the biggest earlier full week. The days before the race are lighter than every full week that is not a deload. A deload may be lighter than race week.
 
-## Database
+## How the CLI persists a plan
 
-`build_training_plan` does not open the database. `generate` saves the plan for Anay and schedules the current week. Accepting a plan, Monday check-in, and Garmin login do too. SQLite stays the database: one file, users as rows, and [`Repo`](../src/whoneedsacoach/store/repo.py) as the only reader and writer. The default path is `data/coach.db`. `COACH_DB` overrides it ([`utils/config.py`](../src/whoneedsacoach/utils/config.py)). Connecting creates the file, turns on WAL, and creates tables that are missing.
+`build_training_plan` does not open the database. CLI paths that save a plan, accept it, run Monday check-in, or log Garmin in use [`Repo`](../src/whoneedsacoach/store/repo.py) against SQLite (`data/coach.db`, or `COACH_DB`). Schema, auth users, refresh tokens, and HTTP plan statuses are documented in [`docs/software-design.md`](software-design.md).
 
-A later UI on one app server can keep this file. Postgres is the swap when more than one app server must share it, and that swap stays behind `Repo`.
-
-Garmin tokens and passwords are not columns. `users.garmin_token_dir` is the directory where that user's OAuth tokens were written (`data/tokens/<user id>`).
-
-```mermaid
-erDiagram
-    users ||--o| plans : has
-    users ||--o{ activities : logs
-    plans ||--o{ activities : records
-    users {
-        int id PK
-        text name UK
-        text garmin_token_dir
-    }
-    plans {
-        int id PK
-        int user_id UK
-        text status
-        text race_json
-        text schedule_json
-        text snapshot_json
-        text plan_json
-        text pending_json
-    }
-    activities {
-        int id PK
-        int user_id FK
-        int plan_id FK
-        text session_date
-        int garmin_activity_id
-        real distance_km
-        real duration_seconds
-        int workout_id
-    }
-```
-
-There is one plan row per user. `race_json`, `schedule_json`, `snapshot_json`, `plan_json`, and `pending_json` are JSON text. `plan_json` is the target. Each week has `week_start`, `target_distance_km`, `long_run_km`, and `sessions`. A session keeps `date`, `type`, `distance_km`, `pace_low`, `pace_high`, and `structure`. After it is placed on the Garmin calendar it also has `workout_id` and `scheduled_workout_id`. Those two ids are inside the JSON, not their own table. Recording an actual run does not change the session distance or pace.
+There is one plan row per user. JSON columns hold race, schedule, snapshot, and the target plan. Each week has `week_start`, `target_distance_km`, `long_run_km`, and `sessions`. A session keeps `date`, `type`, `distance_km`, `pace_low`, `pace_high`, and `structure`. After it is placed on the Garmin calendar it also has `workout_id` and `scheduled_workout_id`. Those two ids are inside the JSON, not their own table. Recording an actual run does not change the session distance or pace.
 
 `activities` is one row per completed scheduled workout. `garmin_activity_id` is unique per user. `session_date` is the planned day that workout was on. `workout_id` is the library workout Garmin linked to the activity.
 
-```bash
-sqlite3 data/coach.db
-.tables
-.schema
-.mode line
-SELECT id, name, garmin_token_dir FROM users;
-SELECT id, user_id, status FROM plans;
-SELECT user_id, session_date, garmin_activity_id, distance_km, workout_id FROM activities;
-```
+## Garmin login (CLI)
 
-`.quit` leaves the shell. On SQLite 3.38 or newer, `SELECT json_pretty(plan_json) FROM plans;` prints the target plan.
+Login is two calls on [`LoginService`](../src/whoneedsacoach/auth/login.py): `begin(name, email, password)`, then `submit_mfa(attempt_id, code)` when Garmin asks for a code. The MFA attempt stays in memory for a few minutes because Garmin's client has to resume the same login.
 
-## Garmin login
-
-Login is two calls on [`LoginService`](../src/whoneedsacoach/auth/login.py): `begin(name, email, password)`, then `submit_mfa(attempt_id, code)` when Garmin asks for a code. The MFA attempt stays in memory for a few minutes because Garmin's client has to resume the same login. A later UI posts those two calls and shows a code field when `begin` returns `mfa_required`. It does not grow a second login.
-
-Until that UI exists, the only account is Anay. `coach login` passes the name `Anay` and the email and password from `GARMIN_EMAIL` and `GARMIN_PASSWORD` in `.env`. Those values are not written to SQLite. On success the tokens go under `data/tokens/<user id>` and that path is saved on the user row. Re-login updates the same path.
+`coach login` passes the name `Anay` and the email and password from `GARMIN_EMAIL` and `GARMIN_PASSWORD` in `.env`. Those values are not written to SQLite. On success the tokens go under `data/tokens/<user id>/garmin` and that path is saved on `provider_connections`. The HTTP integrations surface for the same adapter is in [`docs/software-design.md`](software-design.md).
 
 ## One week on the Garmin calendar
 
@@ -260,7 +214,7 @@ Accepting the Monday proposal replaces the upcoming week, unschedules that week 
 
 ## Tests
 
-[`tests/test_training.py`](../tests/test_training.py) covers `athlete_profile`, grouping workouts into weeks, and markdown rendering. It does not call Garmin or the model. [`tests/test_planner.py`](../tests/test_planner.py) covers `median_weekly_km` and `snapshot_from_runs`. [`tests/test_repo.py`](../tests/test_repo.py) covers users, plans, and activities. [`tests/test_schedule.py`](../tests/test_schedule.py) covers workout JSON, which sessions are due, and completion sync with a fake Garmin. [`tests/test_login.py`](../tests/test_login.py) covers the MFA step and the saved token path. None of these call Garmin Connect.
+[`tests/test_training.py`](../tests/test_training.py) covers `athlete_profile`, grouping workouts into weeks, and markdown rendering. It does not call Garmin or the model. [`tests/test_planner.py`](../tests/test_planner.py) covers `median_weekly_km` and `snapshot_from_runs`. [`tests/test_schedule.py`](../tests/test_schedule.py) covers workout JSON, which sessions are due, and completion sync with a fake Garmin. [`tests/test_login.py`](../tests/test_login.py) covers the MFA step and the saved token path. HTTP API tests are listed in [`docs/software-design.md`](software-design.md).
 
 ## What would move it up in terms of agency:
 Level 4: an always-on coach that notices missed runs, reschedules, and messages without coach checkin / chat approval for every consequential change.

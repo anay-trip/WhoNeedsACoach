@@ -1,3 +1,4 @@
+from whoneedsacoach.auth.passwords import hash_password
 from whoneedsacoach.store.repo import Repo
 
 
@@ -48,3 +49,42 @@ def test_activity_upsert_keeps_one_row_per_garmin_id(tmp_path):
     assert len(rows) == 1
     assert rows[0]["distance_km"] == 8.4
     assert rows[0]["workout_id"] == 7
+
+
+def test_email_user_and_refresh_token(tmp_path):
+    repo = Repo(tmp_path / "coach.db")
+    user = repo.create_user("anay@example.com", hash_password("password1"), "Anay")
+    assert user["email"] == "anay@example.com"
+    assert repo.get_user_by_email("ANAY@example.com")["id"] == user["id"]
+    repo.store_refresh_token(user["id"], "abc")
+    row = repo.get_refresh_token("abc")
+    assert row["user_id"] == user["id"]
+    assert row["revoked_at"] is None
+    assert repo.revoke_refresh_token("abc")
+    assert repo.get_refresh_token("abc")["revoked_at"] is not None
+
+
+def test_upsert_plan_for_build_overwrites(tmp_path):
+    repo = Repo(tmp_path / "coach.db")
+    user = repo.create_user("a@example.com", hash_password("password1"))
+    first = repo.upsert_plan_for_build(
+        user["id"],
+        race={"distance": "10k", "date": "2027-06-01"},
+        schedule={"run_days": ["sun"], "long_run_day": "sun"},
+        snapshot={"baseline_weekly_km": 20},
+        generation_id="gen1",
+    )
+    assert first["status"] == "pending"
+    second = repo.upsert_plan_for_build(
+        user["id"],
+        race={"distance": "half_marathon", "date": "2027-08-01"},
+        schedule={"run_days": ["wed", "sun"], "long_run_day": "sun"},
+        snapshot={"baseline_weekly_km": 30},
+        generation_id="gen2",
+    )
+    assert second["id"] == first["id"]
+    assert second["status"] == "pending"
+    assert second["race"]["distance"] == "half_marathon"
+    assert second["plan"] is None
+    assert second["error_message"] is None
+    assert second["snapshot"]["generation_id"] == "gen2"

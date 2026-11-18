@@ -47,3 +47,4 @@ def test_mfa_then_saves_the_token_path(tmp_path):
     user = repo.get_user(ready["user_id"])
     assert user["name"] == "Anay"
     assert Path(user["garmin_token_dir"], "garmin_tokens.json").is_file()
+    assert Path(user["garmin_token_dir"]).name == "garmin"
