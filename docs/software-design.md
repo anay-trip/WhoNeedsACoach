@@ -27,62 +27,58 @@ Entry point: `whoneedsacoach.api.app:app` via `create_app` in [`api/app.py`](../
 
 Never store provider or app passwords in plaintext. Refresh plaintext is never stored (SHA-256 hash only).
 
-```mermaid
-erDiagram
-    users ||--o{ refresh_tokens : has
-    users ||--o{ provider_connections : connects
-    users ||--o| plans : has
-    users ||--o{ activities : logs
-    plans ||--o{ activities : records
+```text
+Relationships
+-------------
+users 1 --- * refresh_tokens
+users 1 --- * provider_connections
+users 1 --- 0..1 plans
+users 1 --- * activities
+plans 1 --- * activities
 
-    users {
-        int id PK
-        text email UK
-        text password_hash
-        text display_name
-        text created_at
-    }
+users
+  id                  PK
+  email               UNIQUE
+  password_hash
+  display_name
+  created_at
 
-    refresh_tokens {
-        int id PK
-        int user_id FK
-        text token_hash UK
-        text created_at
-        text revoked_at
-    }
+refresh_tokens
+  id                  PK
+  user_id             FK -> users
+  token_hash          UNIQUE
+  created_at
+  revoked_at
 
-    provider_connections {
-        int id PK
-        int user_id FK
-        text provider
-        text token_dir
-        text status
-        text connected_at
-    }
+provider_connections
+  id                  PK
+  user_id             FK -> users
+  provider            UNIQUE with user_id
+  token_dir
+  status
+  connected_at
 
-    plans {
-        int id PK
-        int user_id UK
-        text status
-        text race_json
-        text schedule_json
-        text snapshot_json
-        text plan_json
-        text error_message
-        text failed_at
-        text updated_at
-    }
+plans
+  id                  PK
+  user_id             FK -> users, UNIQUE
+  status
+  race_json
+  schedule_json
+  snapshot_json
+  plan_json
+  error_message
+  failed_at
+  updated_at
 
-    activities {
-        int id PK
-        int user_id FK
-        int plan_id FK
-        text session_date
-        int garmin_activity_id
-        real distance_km
-        real duration_seconds
-        int workout_id
-    }
+activities
+  id                  PK
+  user_id             FK -> users
+  plan_id             FK -> plans
+  session_date
+  garmin_activity_id
+  distance_km
+  duration_seconds
+  workout_id
 ```
 
 Schema and migrations: [`store/db.py`](../src/whoneedsacoach/store/db.py). Default file `data/coach.db` (`COACH_DB`). Connecting creates the file, enables WAL and foreign keys, and migrates older CLI-shaped `users` rows (name identity → email, `garmin_token_dir` → `provider_connections`).
@@ -165,14 +161,10 @@ No week sub-route. No accept/reject. No piecemeal intake PUTs. Always overwrite 
 | `active` | Done; `plan_json` populated |
 | `failed` | Terminal; `error_message` (+ `failed_at`) set |
 
-```mermaid
-stateDiagram-v2
-  [*] --> pending: POST /plan
-  pending --> building: worker picks up
-  building --> active: plan_json saved
-  building --> failed: error_message set
-  active --> pending: POST /plan overwrite
-  failed --> pending: POST /plan overwrite
+```text
+POST /plan → pending → building → active
+                          ↘ failed
+active|failed → pending (on overwrite POST /plan)
 ```
 
 Job logic: [`jobs/plan_build.py`](../src/whoneedsacoach/jobs/plan_build.py).
